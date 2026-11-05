@@ -5,24 +5,109 @@ import hmac
 import json
 import os
 import re
+import shutil
+import signal
 import socket
 import struct
 import subprocess
 import urllib.parse
 import time
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, List, Optional
 from playwright.async_api import async_playwright
 
 def _find_chrome_path() -> str:
-    candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-    ]
-    for p in candidates:
-        if os.path.exists(p):
+    env_chrome = os.environ.get("CHROME_PATH") or os.environ.get("GOOGLE_CHROME_BIN") or ""
+    if env_chrome and os.path.isfile(env_chrome) and os.access(env_chrome, os.X_OK):
+        return env_chrome
+    for name in (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium-browser",
+        "chromium",
+        "google-chrome-beta",
+    ):
+        found = shutil.which(name)
+        if found:
+            return found
+    for p in (
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/opt/google/chrome/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
-    return candidates[0]
+    return ""
+
+
+def chrome_linux_flags() -> List[str]:
+    # password-store=basic avoids GNOME/KWallet keyring prompts; no-sandbox is required as root and in many desktops.
+    return [
+        "--password-store=basic",
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        "--disable-gpu",
+    ]
+
+
+def chrome_launch_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
+        env["DISPLAY"] = ":0"
+    return env
+
+
+def kill_port_listeners(port: int) -> None:
+    pids = set()
+    try:
+        out = subprocess.check_output(
+            ["ss", "-lptn", f"sport = :{port}"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        pids.update(int(x) for x in re.findall(r"pid=(\d+)", out))
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(
+            ["lsof", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        pids.update(int(x) for x in out.split() if x.strip().isdigit())
+    except Exception:
+        pass
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def kill_process_tree(proc: Optional[subprocess.Popen]) -> None:
+    if not proc or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=3)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 CHROME_PATH = _find_chrome_path()
@@ -1701,12 +1786,19 @@ class GoogleUltraAutomator:
             self.update_state(status="error", step_message=f"❌ {err_card}")
             return
 
+        chrome_bin = CHROME_PATH or _find_chrome_path()
+        if not chrome_bin:
+            err_chrome = "未找到 Google Chrome / Chromium。请安装 google-chrome-stable，或设置环境变量 CHROME_PATH 指向可执行文件。"
+            self.log(f"❌ {err_chrome}")
+            self.update_state(status="error", step_message=f"❌ {err_chrome}")
+            return
+
         user_data_dir = get_profile_dir(self.account["id"], self.account["email"])
         resolved_proxy = resolve_account_proxy(self.account, self.target_region, self.proxy_template)
         parsed_proxy = parse_proxy_string(resolved_proxy)
 
         chrome_args = [
-            CHROME_PATH,
+            chrome_bin,
             f"--remote-debugging-port={self.port}",
             f"--user-data-dir={user_data_dir}",
             "--no-first-run",
@@ -1720,6 +1812,7 @@ class GoogleUltraAutomator:
             "--webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--enforce-webrtc-ip-permission-check",
             "--start-maximized",
+            *chrome_linux_flags(),
         ]
 
         if parsed_proxy:
@@ -1740,18 +1833,10 @@ class GoogleUltraAutomator:
 
         chrome_args.append("about:blank")
 
-        # Cleanly kill any lingering process listening on self.port
-        try:
-            net_out = subprocess.check_output(f"netstat -ano | findstr :{self.port}", shell=True).decode("gbk", errors="ignore")
-            for line in net_out.splitlines():
-                if "LISTENING" in line:
-                    old_pid = line.strip().split()[-1]
-                    subprocess.run(f"taskkill /F /T /PID {old_pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        kill_port_listeners(self.port)
         await asyncio.sleep(0.8)
 
-        self.proc = subprocess.Popen(chrome_args)
+        self.proc = subprocess.Popen(chrome_args, env=chrome_launch_env(), start_new_session=True)
         await asyncio.sleep(2.8)
 
         try:
@@ -1787,8 +1872,4 @@ class GoogleUltraAutomator:
         finally:
             if self.proxy_bridge:
                 await self.proxy_bridge.stop()
-            if self.proc:
-                try:
-                    subprocess.run(f"taskkill /F /T /PID {self.proc.pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
+            kill_process_tree(self.proc)

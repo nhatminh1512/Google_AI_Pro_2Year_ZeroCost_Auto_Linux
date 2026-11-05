@@ -18,6 +18,9 @@ from automation_engine import (
     get_profile_dir,
     resolve_account_proxy,
     parse_proxy_string,
+    chrome_linux_flags,
+    chrome_launch_env,
+    _find_chrome_path,
     CHROME_PATH,
     BASE_DIR,
     SCREENSHOTS_DIR,
@@ -403,72 +406,8 @@ MANUAL_BRIDGES: Dict[str, LocalHttpProxyAuthBridge] = {}
 
 
 def _launch_on_interactive_desktop(args: List[str]):
-    """
-    Launch a GUI process (e.g. Chrome) explicitly onto the user's interactive desktop (winsta0\\default)
-    even if the backend server was started inside an isolated/background desktop session (e.g. exebox).
-    """
-    if os.name == "nt":
-        try:
-            import ctypes
-            import ctypes.wintypes as wt
-
-            class STARTUPINFOW(ctypes.Structure):
-                _fields_ = [
-                    ("cb", wt.DWORD),
-                    ("lpReserved", wt.LPWSTR),
-                    ("lpDesktop", wt.LPWSTR),
-                    ("lpTitle", wt.LPWSTR),
-                    ("dwX", wt.DWORD),
-                    ("dwY", wt.DWORD),
-                    ("dwXSize", wt.DWORD),
-                    ("dwYSize", wt.DWORD),
-                    ("dwXCountChars", wt.DWORD),
-                    ("dwYCountChars", wt.DWORD),
-                    ("dwFillAttribute", wt.DWORD),
-                    ("dwFlags", wt.DWORD),
-                    ("wShowWindow", wt.WORD),
-                    ("cbReserved2", wt.WORD),
-                    ("lpReserved2", ctypes.POINTER(wt.BYTE)),
-                    ("hStdInput", wt.HANDLE),
-                    ("hStdOutput", wt.HANDLE),
-                    ("hStdError", wt.HANDLE),
-                ]
-
-            class PROCESS_INFORMATION(ctypes.Structure):
-                _fields_ = [
-                    ("hProcess", wt.HANDLE),
-                    ("hThread", wt.HANDLE),
-                    ("dwProcessId", wt.DWORD),
-                    ("dwThreadId", wt.DWORD),
-                ]
-
-            si = STARTUPINFOW()
-            si.cb = ctypes.sizeof(si)
-            si.lpDesktop = "winsta0\\default"
-            si.dwFlags = 1  # STARTF_USESHOWWINDOW
-            si.wShowWindow = 3  # SW_MAXIMIZE
-            pi = PROCESS_INFORMATION()
-            cmd_str = subprocess.list2cmdline(args)
-            cmd_buf = ctypes.create_unicode_buffer(cmd_str)
-            ok = ctypes.windll.kernel32.CreateProcessW(
-                None,
-                cmd_buf,
-                None,
-                None,
-                False,
-                0x00000010,  # CREATE_NEW_CONSOLE
-                None,
-                None,
-                ctypes.byref(si),
-                ctypes.byref(pi),
-            )
-            if ok:
-                ctypes.windll.kernel32.CloseHandle(pi.hThread)
-                ctypes.windll.kernel32.CloseHandle(pi.hProcess)
-                return
-        except Exception:
-            pass
-    subprocess.Popen(args)
+    """Launch Chrome on the current X11/Wayland session (falls back to DISPLAY=:0)."""
+    subprocess.Popen(args, env=chrome_launch_env(), start_new_session=True)
 
 
 @app.post("/api/open_browser")
@@ -484,14 +423,19 @@ async def open_browser_manual(req: AccountActionReq):
     resolved_proxy = resolve_account_proxy(target_acc, target_region, proxy_template)
     parsed_proxy = parse_proxy_string(resolved_proxy)
 
+    chrome_bin = CHROME_PATH or _find_chrome_path()
+    if not chrome_bin:
+        raise HTTPException(status_code=500, detail="未找到 Google Chrome / Chromium，请安装 google-chrome-stable 或设置 CHROME_PATH")
+
     chrome_args = [
-        CHROME_PATH,
+        chrome_bin,
         f"--user-data-dir={user_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
         "--webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--enforce-webrtc-ip-permission-check",
         "--start-maximized",
+        *chrome_linux_flags(),
     ]
 
     if parsed_proxy:

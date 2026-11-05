@@ -1,17 +1,30 @@
 ========================================================================
   Google AI Pro (5 TB) 零成本两年 (US$0.00 -> 24个月) 全自动控制台
+  Linux 版
 ========================================================================
 
 【一、运行环境要求】
-1. Windows 10 / 11 系统
-2. 已安装 Google Chrome 浏览器（默认路径即可）
-3. 已安装 Python 3.10 或更高版本（安装时勾选 Add Python to PATH）
+1. Linux 桌面环境（需要可用的 DISPLAY / Wayland，用于弹出 Chrome 窗口）
+2. 已安装 Google Chrome 或 Chromium
+   - 推荐: google-chrome-stable
+   - 也可设置环境变量 CHROME_PATH 指向 chrome 可执行文件
+3. 已安装 Python 3.10 或更高版本（含 python3-venv / python3-pip）
 4. 网络环境：本机开启美区（US）代理，或在控制台左侧填写代理模板
 
+Ubuntu / Debian 安装 Chrome 示例:
+  wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+
 【二、快速启动步骤】
-1. 首次使用请双击运行：【1_首次运行_安装依赖并启动.bat】
-2. 之后日常使用直接双击：【2_启动控制台.bat】
+1. 首次使用请在项目目录执行:
+     chmod +x 1_首次运行_安装依赖并启动.sh 2_启动控制台.sh
+     ./1_首次运行_安装依赖并启动.sh
+2. 之后日常使用直接执行:
+     ./2_启动控制台.sh
 3. 浏览器会自动打开控制台页面：http://127.0.0.1:8765
+   若未自动打开，请手动访问该地址。
+
+无图形界面 / SSH 无 X 转发时无法弹出 Chrome，请在桌面环境或 VNC/XRDP 会话中运行。
 
 【三、自定义填写支付卡 & 跑号说明】
 1. 填写支付卡（必填）：
